@@ -3,6 +3,17 @@
 #include <segmem.h>
 #include <string.h>
 
+#define tss_dsc(_dSc_,_tSs_)                                            \
+   ({                                                                   \
+      raw32_t addr    = {.raw = _tSs_};                                 \
+      (_dSc_)->raw    = sizeof(tss_t);                                  \
+      (_dSc_)->base_1 = addr.wlow;                                      \
+      (_dSc_)->base_2 = addr._whigh.blow;                               \
+      (_dSc_)->base_3 = addr._whigh.bhigh;                              \
+      (_dSc_)->type   = SEG_DESC_SYS_TSS_AVL_32;                        \
+      (_dSc_)->p      = 1;                                              \
+   })
+
 void userland() {
    asm volatile ("mov %eax, %cr0");
 }
@@ -138,9 +149,15 @@ void tp() {
     debug("Début Q11:\n");
     //_memcpy8(dst, src, 33);
     // end Q11
-    
+    print_gdt_content(gdt_read_out);
+
     /*QUESTION 12*/
     debug("Début Q12:\n");
+    gdt_read_new.limit = gdt_read_new.limit + 8;  // +8 pour ajouter une entrée (index 5)
+    print_gdt_content(gdt_read_new);
+    set_gdtr(gdt_read_new);
+
+
     our_gdt[4].limit_1 = 0xffff;   //:16;     /* bits 00-15 of the segment limit */
     our_gdt[4].base_1 = 0x0000;    //:16;     /* bits 00-15 of the base address */
     our_gdt[4].base_2 = 0x00;      //:8;      /* bits 16-23 of the base address */
@@ -168,26 +185,39 @@ void tp() {
     our_gdt[5].g = 1;              //:1;      /* granularity */
     our_gdt[5].base_3 = 0x00;      //:8;      /* bits 24-31 of the base address */
     // end Q12
-    
+    get_gdtr(gdt_read_out);
+    print_gdt_content(gdt_read_out);
+
     /*QUESTION 13*/
-    debug("Début Q113:\n");
+    debug("Début Q13:\n");
+    
     // DS/ES/FS/GS
     set_ds(gdt_usr_seg_sel(5));
     set_es(gdt_usr_seg_sel(5));
     set_fs(gdt_usr_seg_sel(5));
     set_gs(gdt_usr_seg_sel(5));
     
-    // SS
+    debug("Fin Q13\n");
+    // SS -> CPL (Current Privilege Level) = 0 =/ RPL (Requested Privilege Level) = 3 -> #GP
     //set_ss(gdt_usr_seg_sel(5)); // plante, #GP
-    //tss_t TSS;
-    //TSS.s0.esp = get_ebp();
-    //TSS.s0.ss  = gdt_krn_seg_sel(2);
-    //tss_dsc(&my_gdt[6], (offset_t)&TSS);
-    //set_tr(gdt_krn_seg_sel(6));
+
+    //TSS = Task State Segment, pour contourner le problème d'écriture du SS.
+    tss_t TSS;
+    TSS.s0.esp = get_ebp();        // Pile Ring 0
+    TSS.s0.ss  = gdt_krn_seg_sel(2); // Segment de pile Ring 0
+    gdt_read_new.limit = gdt_read_new.limit + 8;  // +8 pour ajouter une entrée (index 5)
+    set_gdtr(gdt_read_new);
+    tss_dsc(&our_gdt[6], (offset_t)&TSS); // Créer descripteur TSS à l'index 6
+    set_tr(gdt_krn_seg_sel(6));    // Charger la TSS dans le registre TR
     
     // CS via farjump
-    // fptr32_t fptr = {.segment = gdt_usr_seg_sel(4), .offset = (uint32_t)userland}; 
-    // farjump(fptr);  // plante, #GP
+    //fptr32_t fptr = {.segment = gdt_usr_seg_sel(4), .offset = (uint32_t)userland}; 
+    //farjump(fptr);  // plante, #GP
+    //Le processeur x86 interdit les transitions directes de Ring 0 → Ring 3 via far jump ou far call car :
+        //1. Perte de privilèges non contrôlée : Passer directement de Ring 0 à Ring 3 sans mécanisme de contrôle serait dangereux
+        //2. Violation de sécurité : Un code Ring 0 pourrait accidentellement ou malicieusement passer en Ring 3 avec des données sensibles
+        //3. Cohérence des segments : Le changement de CS doit être accompagné d'un changement de pile (SS:ESP) approprié
+
     // interdit, un moyen de démarrer une tâche ring 3 depuis le ring 0 est 
     // de détourner l'usage principal de iret pour profiter du changement 
     // de contexte que le CPU sait effectuer à ce moment-là... cf. TP3 pour l'implem.
