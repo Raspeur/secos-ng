@@ -211,6 +211,7 @@ typedef struct task_state_segment
 #define set_seg_sel(_sel_,_reg_)                        \
    asm volatile ("movw %%ax, %%"#_reg_ ::"a"(_sel_))
 
+#define get_cs()     get_seg_sel(cs)
 #define get_ss()     get_seg_sel(ss)
 #define get_ds()     get_seg_sel(ds)
 #define get_es()     get_seg_sel(es)
@@ -225,6 +226,8 @@ typedef struct task_state_segment
 
 #define get_gdtr(aLocation)       \
    asm volatile ("sgdt %0"::"m"(aLocation):"memory")
+   	/*%0 = remplace moi par la première contrainte"*/
+	/*"m"(var allouée en mémoire) => "m"(a) => -8(%ebp) => sgdt -8(%ebp)*/
 #define get_ldtr(aLocation)       \
    asm volatile ("sldt %0"::"m"(aLocation):"memory")
 #define get_tr(aLocation)         \

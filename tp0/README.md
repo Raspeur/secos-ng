@@ -95,6 +95,34 @@ On peut vérifier nos hypothèses par les commandes suivantes :
 
 Note : il est possible de s'aider également de la page wiki sur les options de [linkage](https://github.com/agantet/secos-ng/wiki/Tooling#options-de-linkage).
 
+
+### Correction prof
+```bash
+nm kernel.elf| grep entry
+00303010 T entry
+
+grep -nr '.mbh' ..
+../utils/linker.lds:17:   .mbh      : { KEEP(*(.mbh)) . = ALIGN(4);     } : phboot //mbh fait 12 octets
+grep: ../tp0/kernel.elf : fichiers binaires correspondent
+../tp0/README.md:49:déterminer la taille de la section `.mbh`  et `.stack` et en déduire d'où
+../tp0/README.md:63:Pour déterminer la taille des sections `.mbh` et `.stack`, il faut examiner le fichier `linker.l:
+../tp0/README.md:69:   .mbh      : { KEEP(*(.mbh)) . = ALIGN(4);     } : phboot
+../tp0/README.md:75:La section `.mbh` commence à `0x300000` et est suivie par `.stack`. La taille de `.mbh` dépend d:
+../tp0/README.md:83:Dans `entry.s`, le point d'entrée (`_start`) est placé juste après ces sections, au début de `.t.
+../tp0/README.md:87:(tp0)$ readelf -S kernel.elf | grep .mbh
+../tp0/README.md:88:  [ 1] .mbh              PROGBITS        00300000 000094 00000c 00   A  0   0  4
+../kernel/include/mbi.h:25:#define __mbh__                 __attribute__ ((section(".mbh"),aligned(4)))
+grep: ../kernel/core/start.o : fichiers binaires correspondent
+../kernel/core/start.c:9:volatile const uint32_t __mbh__ mbh[] = {
+
+grep -nr '.idt_jmp' ..
+../utils/linker.lds:24:   .idt_jmp  : { KEEP(*(.idt_jmp))               } : phsetup
+grep: ../tp0/kernel.elf : fichiers binaires correspondent
+grep: ../kernel/core/idt.o : fichiers binaires correspondent
+../kernel/core/idt.s:52:.section        .idt_jmp, "ax", @progbits
+
+```
+
 ## Cartographie mémoire au démarrage
 
 Au démarrage d'un noyau de système, il peut être intéressant de prendre

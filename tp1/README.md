@@ -38,10 +38,77 @@ point d'entrée du noyau.
   la macro qui l'utilise pour afficher l'adresse
   de base de la GDT en cours d'utilisation ainsi que sa "limite" (type utile :
   `gdt_reg_t`).**
+  
+  SGDT = Store GDT Register
+  LGDT = Load GDT Register
 
+  ```h
+  #define get_gdtr(aLocation)       \
+   asm volatile ("sgdt %0"::"m"(aLocation):"memory")
+  ```
 **Q2\* :  Dans [`tp.c`](./tp.c), un exemple d'implémentation d'affichage du
   contenu de table de type GDT est fournie (fonction `print_gdt_content`).
   L'utiliser pour afficher le contenu de la GDT courante.**
+  
+```
+root   (hd0,0)
+Filesystem type is fat, partition type 0x6
+kernel /kernel.elf
+[Multiboot-elf, <0x300000:0xc:0x0>, <0x300010:0x0:0x2000>, <0x302010:0x2b60:
+0xc30>, shtab=0x3062d0, entry=0x303010
+
+secos-bc8d830-fc386b8 (c) Airbus
+0 [0x0 - 0xfff0] seg_t: 0x0 desc_t: 0 priv: 0 present: 0 avl: 0 longmode: 0 default: 0 gran: 0 
+1 [0x0 - 0xffffffff] seg_t: 0xb desc_t: 1 priv: 0 present: 1 avl: 0 longmode: 0 default: 1 gran: 1 
+2 [0x0 - 0xffffffff] seg_t: 0x3 desc_t: 1 priv: 0 present: 1 avl: 0 longmode: 0 default: 1 gran: 1 
+3 [0x0 - 0xffff] seg_t: 0xf desc_t: 1 priv: 0 present: 1 avl: 0 longmode: 0 default: 0 gran: 0 -----> Pour le mode REEL
+4 [0x0 - 0xffff] seg_t: 0x3 desc_t: 1 priv: 0 present: 1 avl: 0 longmode: 0 default: 0 gran: 0 -----> Pour le mode REEL
+halted !
+```
+Flat = Tous les segments se superposent
+seg_t = Type de données (data/code)
+desc_t ?
+priv ?
+present = Bit P (Present) : Indique si le segment est présent en mémoire.
+avl ?
+longmode ?
+default ?
+granularite = si à 1, décallage de la valeur de la limit à gauche (<<) de 12, et complété de f.
+
+GDT express (par le prof)
+```
+mov $42, %es:(%eax) | cr0.PE = 1
+%eax = @virtuelle
+equivalent à : un store avec un adressage indirect
+%eax + base = @physique
+
+la sécurité intervient après, on vérifie que %eax < limit
+
+
+@virtuelle -> pagination -> @physique
+	  seg.          reg.
+
+chaque segment a une taille de 8 octets
+	  
+gdt_ptr est composé d'une base et d'une limite.
+base = 32 bits
+limit = 16bits
+```
+```
+ds = data segment
+cs = code 
+ss = stack
+es = dest string copy
+	es : edi
+	ds : esi
+gs = 
+fs = 
+```
+
+1. Je crée un pointeur de gdt, @de la base de la GDT et limit (sizeof(GDT) - 1)
+2. On constitue la GDT : Chaque segment a son champ base (qui contient le dpl (R/W/R)) et une limite.
+Il y aussi un element qui defini le type (data/code), ainsi que la granularité.
+3. On defini le contenu de chaque segment.
 
 **Q3 : Lire les valeurs des sélecteurs de segment à l'aide des macros prévues
   à cet effet dans [`kernel/include/segmem.h`](../kernel/include/segmem.h), et en déduire quels descripteurs de cette GDT sont en
@@ -52,9 +119,14 @@ point d'entrée du noyau.
 * Le segment de pile (sélecteur ss)
 * D'autres segments (sélecteurs autres : es, fs, gs, etc.)
 
+On ne peut pas lire le segment CS, on se prend un undefined
+
 **Q4 : Que constate-t-on ? Que dire de la ségrégation mémoire mise en place
   par défaut par GRUB avec une telle configuration ?**
 
+Tous les descripteurs de segments, utilisent un segment de 0 à 4Gigas.
+On suppose que le code segment est @ 0x8 dans la GDT.
+Ce qui correspond à l'index 0x2.
 
 ## Une première reconfiguration de la GDT : en mode "flat"
 
