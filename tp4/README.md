@@ -42,6 +42,8 @@ des espaces d'adressage.
 **Q3\* : Modifier le registre CR0 de sorte à activer la pagination dans `tp.c`.
   Que se passe-t-il ? Pourquoi ?**
 
+Quand j'active la pagination, bit PG de CR0, et comme le handler d'exception n'est pas prêt, ça mene à une TripleFault qui provoque un redemarrage.
+
 **Q4\* : Un certain nombre de choses restent à configurer avant l'activation de
   la pagination. Comme pour le PGD, allouer également une PTB de type `
   (pte32_t*)` à l'adresse `0x601000`.**
@@ -64,6 +66,12 @@ des espaces d'adressage.
   l'adresse virtuelle `0xc0000000` permette de modifier votre PGD après
   activation de la pagination. Comment le réaliser ?**
 
+  Il faut décomposer 0xc0000000 en d,t (10 bits suivant p) et p (p = 12 derniers bits), ce qui donne : 
+  1100 0000 00 | 00 0000 0000 | 0000 0000 0000
+   d = 0x300         t= 0x0        p = 0x0
+  
+  Dans la PGD, à l'indice 300, pointe vers la PTD à l'index 0, où on rempli avec l'adresse 0x6000000.
+
 
 ## Quelques exercices supplémentaires de configuration spécifique
 
@@ -73,3 +81,6 @@ des espaces d'adressage.
 
 **Q9 : Effacer la première entrée du PGD. Que constatez-vous ? Expliquez
   pourquoi ?**
+
+- A priopri : supprimer le mapping configuré pour toutes les adresses viertue=elles entre 0 et 0x3ff000
+- Devrait ...
