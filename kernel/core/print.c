@@ -169,8 +169,8 @@ size_t __vsnprintf(char *buffer, size_t len,
 
    buf.data.str = buffer;
    buf.sz = 0;
-   interp = false;
-   lng = false;
+   interp = false_0;
+   lng = false_0;
    size = 4;
 
    if(len) len--;
@@ -186,7 +186,7 @@ size_t __vsnprintf(char *buffer, size_t len,
             if(lng)
                size = 8;
             else
-               lng = true;
+               lng = true_1;
             continue;
          } else if(c == 'h'){
             size /= 2;
@@ -266,12 +266,12 @@ size_t __vsnprintf(char *buffer, size_t len,
             panic("unsupported format arg '%c'\n", c);
          }
 
-         interp = false;
-         lng = false;
+         interp = false_0;
+         lng = false_0;
       }
       else if(c == '%')
       {
-         interp = true;
+         interp = true_1;
          size = 4;
       }
       else

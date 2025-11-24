@@ -38,7 +38,7 @@ typedef unsigned long          size_t;
 typedef unsigned long          offset_t;
 typedef unsigned long          ulong_t;
 
-typedef enum { false=0, true } bool_t;
+typedef enum { false_0=0, true_1 } bool_t;
 
 /*
 ** Offset of a field from a structure
