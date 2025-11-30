@@ -58,6 +58,10 @@ typedef struct task_context
    uint32_t cr3;
    uint32_t eflags;
    gpr_t gpr;
+   /* saved instruction pointer and segment selectors for task resume */
+   uint32_t eip;
+   uint32_t cs;
+   uint32_t ss;
 
 } __attribute__((packed)) task_ctx_t;
 
@@ -100,56 +104,176 @@ void init_gdt()
 // SYSCALL MANAGEMENT
 void syscall_isr()
 {
+   /* push general regs, pass pointer to saved regs in eax, call handler */
    asm volatile(
-       "leave ; pusha        \n"
-       "mov %esp, %eax      \n"
-       "call syscall_handler \n"
-       "popa ; iret");
+      "pusha        \n"
+      "mov %esp, %eax      \n"
+      "call syscall_handler \n"
+      "popa ; iret");
 }
 
 void __regparm__(1) syscall_handler(int_ctx_t *ctx)
 {
-   debug("SYSCALL eax = %s%d\n", "TIMER IT \n", (int)(ctx));
-}
+   /* Expect user pointer in EAX (saved in ctx->gpr.eax) */
+   uint32_t user_ptr = ctx->gpr.eax.raw;
+   uint32_t val = 0;
+   /* read the user-space counter (identity-mapped or accessible) */
+   val = *((uint32_t *)user_ptr);
 
-void __regparm__(1) timer_handler(void)
-{
-   outb(0x20, 0x20); // send EOI to master PIC at port 0x20
-   debug("TIMER IT \n");
+   debug("SYSCALL: counter = %u\n", val);
 }
 
 // TIMER MANAGEMENT FOR TASK SWITCHING
 void timer_isr()
 {
+   /* Save general registers, invoke scheduler to pick/prepare next task,
+      rebuild the user stack/frame for that task, fix stack pointer, then iret */
    asm volatile(
-       "leave ; pusha        \n"
-       "mov %esp, %eax      \n"
-       "call timer_handler \n"
-       "popa ; iret");
+      "pusha        \n"
+      "call timer_handler \n"
+      "popa        \n"
+      "add $4, %esp   \n"
+      "iret        \n"
+   );
 }
 
 // USERLAND TASKS
 // USER TASKS in .user memory area
+/* forward declaration of the user-space syscall wrapper (placed in .user) */
+__attribute__((section(".user"))) void sys_counter(uint32_t *counter);
+
 __attribute__((section(".user"))) void user0()
 {
-   // TODO à compléter
+   /* user0: increment the shared counter at virtual 0x700000 */
+   //uint32_t *shared0 = (uint32_t *)0x700000;
    while (1)
    {
-      debug("%s", "task1\n");
-      for (volatile int i = 0; i < 10000000; i++)
-         ;
+      //(*shared0)++;
+      //debug("user0 : %d\n", *shared0);
+      debug("user0\n");
+      for (volatile int i = 0; i < 100000; i++)
+      ;
    }
 }
 
 __attribute__((section(".user"))) void user1()
 {
-   // TODO à compléter
+   /* user1: periodically request kernel to print the shared counter via syscall */
+   //uint32_t *shared1 = (uint32_t *)0x701000;
    while (1)
    {
-      debug("%s", "task2\n");
-      for (volatile int i = 0; i < 10000000; i++)
-         ;
+      /* call the user wrapper */
+      //sys_counter(shared1);
+      /* temporary direct printing */
+      debug("user1\n");
+      for (volatile int i = 0; i < 100000; i++)
+      ;
    }
+}
+
+/* user-space syscall wrapper placed in .user so it runs in ring3 */
+__attribute__((section(".user"))) void sys_counter(uint32_t *counter)
+{
+   asm volatile ("int $0x80" :: "a"(counter));
+}
+
+/* Timer interrupt is routed through a assembly wrapper that
+ * invokes timer_handler().  timer_handler() is responsible for:
+ *  - saving the current user registers and resume frame into
+ *    Task_Context[cur];
+ *  - selecting the next task and loading its CR3 (address space);
+ *  - rebuilding the user stack/frame exactly as expected by iret
+ *    so execution resumes in ring 3 for the chosen task.
+ * The function relies on the precise stack layout produced by the
+ * assembly wrapper and on Task_Context entries initialized in init_paging().
+ */
+void timer_handler(void)
+{
+   uint32_t *stack_ptr;
+   uint32_t ss, cs;
+   uint32_t esp0;
+
+   debug("schedule int");
+   /* send EOI to PIC so future timer IRQs are delivered */
+   outb(0x20, 0x20);
+   /* read EBP into stack_ptr (pointer to the saved stack frame) */
+   asm("mov %%ebp, %%eax; mov %%eax, %0" : "=m"(stack_ptr) : );
+
+   /* Save context into Task_Context[cur] */
+   int cur = task_id;
+   Task_Context[cur].gpr.edi.raw = stack_ptr[2];
+   Task_Context[cur].gpr.esi.raw = stack_ptr[3];
+   Task_Context[cur].gpr.ebp.raw = stack_ptr[10];
+   Task_Context[cur].gpr.ebx.raw = stack_ptr[6];
+   Task_Context[cur].gpr.edx.raw = stack_ptr[7];
+   Task_Context[cur].gpr.ecx.raw = stack_ptr[8];
+   Task_Context[cur].gpr.eax.raw = stack_ptr[9];
+   Task_Context[cur].eip = stack_ptr[11];
+   Task_Context[cur].cs = stack_ptr[12];
+   Task_Context[cur].eflags = stack_ptr[13];
+   Task_Context[cur].gpr.esp.raw = stack_ptr[14];
+   Task_Context[cur].ss = stack_ptr[15];
+
+   /* Prepare kernel stack (cleanup) */
+   TSS.s0.esp = (uint32_t)(stack_ptr + 16);
+   esp0 = TSS.s0.esp;
+
+   /* Pick next process (2-task round-robin) */
+   if (NUMBER_OF_TASKS > task_id + 1) {
+      task_id = task_id + 1;
+   } else {
+      task_id = 0;
+   }
+   int nxt = task_id;
+
+   ss = (uint32_t)Task_Context[nxt].ss;
+   cs = (uint32_t)Task_Context[nxt].cs;
+
+   /* Build the new user stack and gpr area*/
+   asm volatile (
+      "mov %0, %%esp\n"
+      "push %1      \n"
+      "push %2      \n"
+      "push %3      \n"
+      "push %4      \n"
+      "push %5      \n"
+      ::
+      "r"(esp0),
+      "r"(ss),
+      "r"(Task_Context[nxt].gpr.esp.raw),
+      "r"(Task_Context[nxt].eflags),
+      "r"(cs),
+      "r"(Task_Context[nxt].eip)
+   );
+
+   asm volatile (
+      "push %0      \n"
+      "push %1      \n"
+      "push %2      \n"
+      "push %3      \n"
+      "push %4      \n"
+      "push %5      \n"
+      ::
+      "r"(Task_Context[nxt].gpr.ebp.raw),
+      "r"(Task_Context[nxt].gpr.eax.raw),
+      "r"(Task_Context[nxt].gpr.ecx.raw),
+      "r"(Task_Context[nxt].gpr.edx.raw),
+      "r"(Task_Context[nxt].gpr.ebx.raw),
+      "r"(Task_Context[nxt].gpr.esp.raw)
+   );
+
+   asm volatile (
+      "push %0      \n"
+      "push %1      \n"
+      "push %2      \n"
+      "mov %3, %%eax  \n"
+      "mov %%eax, %%cr3  \n"
+      ::
+      "r"(Task_Context[nxt].gpr.ebp.raw),
+      "r"(Task_Context[nxt].gpr.esi.raw),
+      "r"(Task_Context[nxt].gpr.edi.raw),
+      "r"(Task_Context[nxt].cr3)
+   );
 }
 
 void init_paging()
@@ -224,6 +348,11 @@ void init_paging()
 
    /* sauvegarder le PGD pour la première tâche utilisateur */
    Task_Context[0].cr3 = (uint32_t)pgd;
+   /* initialize resume frame for task 0 */
+   Task_Context[0].eip = (uint32_t)&user0;
+   Task_Context[0].cs = c3_sel;
+   Task_Context[0].ss = d3_sel;
+   Task_Context[0].eflags = 0x200; /* IF=1 */
 
    /* remplir une seconde PGD/PTB pour user1 (PGD à 0x1600000, PTB1 à 0x1601000 et PTB2 à 0x1602000) */
    pde32_t *user_pgd = (pde32_t *)0x1600000;
@@ -260,12 +389,19 @@ void init_paging()
 
    /* sauvegarder le PGD pour la seconde tâche utilisateur */
    Task_Context[1].cr3 = (uint32_t)user_pgd;
+   /* initialize resume frame for task 1 */
+   Task_Context[1].eip = (uint32_t)&user1;
+   Task_Context[1].cs = c3_sel;
+   Task_Context[1].ss = d3_sel;
+   Task_Context[1].eflags = 0x200; /* IF=1 */
 
    /* -------------------------------------------------------------
    Zones partagées et stacks
    ------------------------------------------------------------- */
    /* page physique partagée (choix arbitraire dans 4..8MB) */
    uint32_t shared_phys = 0x700000; /* physical page used as shared page */
+   /* zero-initialize shared physical page */
+   memset((void*)shared_phys, 0, 4096);
    /* mappee virtuellement differemment pour chaque tache (dans 4..8MB) */
    uint32_t shared_v0 = 0x700000; /* for user0 */
    uint32_t shared_v1 = 0x701000; /* for user1 */
@@ -273,7 +409,7 @@ void init_paging()
    /* Remplacer les entrées correspondantes dans chaque PTB2 pour pointer vers shared_phys */
    uint32_t idx0 = (shared_v0 >> 12) & 0x3ff;
    uint32_t idx1 = (shared_v1 >> 12) & 0x3ff;
-   
+
    /* user0's ptb2 currently at ptb2 */
    ptb2[idx0].addr = (shared_phys >> 12);
    ptb2[idx0].p = 1;
@@ -331,7 +467,7 @@ void tp()
    set_tr(ts_sel);
    // end Q1
 
-   debug("Init de l'IDTR");
+   debug("Init de l'IDTR\n");
    // start init
    // TP5 Q2 : install syscall at IRG 0x80
    int_desc_t *dsc;
