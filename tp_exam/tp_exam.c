@@ -106,10 +106,11 @@ void syscall_isr()
 {
    /* push general regs, pass pointer to saved regs in eax, call handler */
    asm volatile(
-      "pusha        \n"
-      "mov %esp, %eax      \n"
-      "call syscall_handler \n"
-      "popa ; iret");
+   "leave        \n"
+   "pusha        \n"
+   "mov %esp, %eax      \n"
+   "call syscall_handler \n"
+   "popa ; iret");
 }
 
 void __regparm__(1) syscall_handler(int_ctx_t *ctx)
@@ -124,15 +125,25 @@ void __regparm__(1) syscall_handler(int_ctx_t *ctx)
 }
 
 // TIMER MANAGEMENT FOR TASK SWITCHING
+int timer_handler(void);
+
 void timer_isr()
 {
-   /* Save general registers, invoke scheduler to pick/prepare next task,
-      rebuild the user stack/frame for that task, fix stack pointer, then iret */
+   /* Save general registers, call timer_handler; the handler returns in EAX
+    * whether it rebuilt the user stack (1) or skipped scheduling (0). The
+    * wrapper will only adjust the stack when needed to avoid corrupting
+    * the kernel frame when scheduling was skipped.
+    */
    asm volatile(
       "pusha        \n"
       "call timer_handler \n"
+      "test %eax, %eax\n"
+      "jz 1f\n"
       "popa        \n"
       "add $4, %esp   \n"
+      "iret        \n"
+      "1:\n"
+      "popa        \n"
       "iret        \n"
    );
 }
@@ -145,12 +156,12 @@ __attribute__((section(".user"))) void sys_counter(uint32_t *counter);
 __attribute__((section(".user"))) void user0()
 {
    /* user0: increment the shared counter at virtual 0x700000 */
-   //uint32_t *shared0 = (uint32_t *)0x700000;
+   uint32_t *shared0 = (uint32_t *)0x700000;
    while (1)
    {
-      //(*shared0)++;
-      //debug("user0 : %d\n", *shared0);
-      debug("user0\n");
+      (*shared0)++;
+      debug("user0 : %d\n", *shared0);
+      //debug("user0\n");
       for (volatile int i = 0; i < 100000; i++)
       ;
    }
@@ -159,11 +170,11 @@ __attribute__((section(".user"))) void user0()
 __attribute__((section(".user"))) void user1()
 {
    /* user1: periodically request kernel to print the shared counter via syscall */
-   //uint32_t *shared1 = (uint32_t *)0x701000;
+   uint32_t *shared1 = (uint32_t *)0x701000;
    while (1)
    {
       /* call the user wrapper */
-      //sys_counter(shared1);
+      sys_counter(shared1);
       /* temporary direct printing */
       debug("user1\n");
       for (volatile int i = 0; i < 100000; i++)
@@ -187,7 +198,7 @@ __attribute__((section(".user"))) void sys_counter(uint32_t *counter)
  * The function relies on the precise stack layout produced by the
  * assembly wrapper and on Task_Context entries initialized in init_paging().
  */
-void timer_handler(void)
+int timer_handler(void)
 {
    uint32_t *stack_ptr;
    uint32_t ss, cs;
@@ -198,6 +209,20 @@ void timer_handler(void)
    outb(0x20, 0x20);
    /* read EBP into stack_ptr (pointer to the saved stack frame) */
    asm("mov %%ebp, %%eax; mov %%eax, %0" : "=m"(stack_ptr) : );
+
+   /* Quick detection: ensure the interrupted frame corresponds to a user->kernel
+    * transition (i.e. SS/ESP were pushed). If not, this IRQ interrupted the kernel
+    * itself — do not attempt to perform a user-context switch using the user-frame
+    * layout (that would read wrong offsets and corrupt state).
+    */
+   uint32_t ss_cand = stack_ptr[15];
+   /* SS should be a small selector like d3_sel (0x1b) or d0_sel (0x10). If it's
+    * large (stack pointer or address), the layout is different -> skip scheduling.
+    */
+   if (ss_cand == 0 || ss_cand > 0x1000 || (ss_cand & 0x3) != 3) {
+      debug("TIMER: interrupted kernel or non-user frame (ss=0x%x) - skipping schedule\n", ss_cand);
+      return 0;
+   }
 
    /* Save context into Task_Context[cur] */
    int cur = task_id;
@@ -274,6 +299,7 @@ void timer_handler(void)
       "r"(Task_Context[nxt].gpr.edi.raw),
       "r"(Task_Context[nxt].cr3)
    );
+   return 1;
 }
 
 void init_paging()
