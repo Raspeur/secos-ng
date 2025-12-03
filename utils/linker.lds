@@ -13,6 +13,8 @@ PHDRS
 
 SECTIONS
 {
+
+
    . = 0x300000;
    .mbh      : { KEEP(*(.mbh)) . = ALIGN(4);     } : phboot 	/*mbh fait 12 octets = 0xc*/
    								/*align 0x10 -> +4/*
@@ -33,6 +35,8 @@ SECTIONS
    
 
    __kernel_end__ = .;
-
-   
+   . = 0x400000;
+   _user1 = .;
+   . = 0x500000;
+   _user2 = .;
 }

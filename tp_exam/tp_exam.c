@@ -151,39 +151,39 @@ void timer_isr()
 // USERLAND TASKS
 // USER TASKS in .user memory area
 /* forward declaration of the user-space syscall wrapper (placed in .user) */
-__attribute__((section(".user"))) void sys_counter(uint32_t *counter);
+__attribute__((section(".user1"))) void sys_counter(uint32_t *counter);
 
-__attribute__((section(".user"))) void user0()
+__attribute__((section(".user1"))) void user1()
 {
-   /* user0: increment the shared counter at virtual 0x700000 */
+   /* user1: increment the shared counter at virtual 0x700000 */
    uint32_t *shared0 = (uint32_t *)0x700000;
    while (1)
    {
       (*shared0)++;
-      debug("user0 : %d\n", *shared0);
-      //debug("user0\n");
+      debug("user1 : %d\n", *shared0);
+      //debug("user1\n");
       for (volatile int i = 0; i < 100000; i++)
       ;
    }
 }
 
-__attribute__((section(".user"))) void user1()
+__attribute__((section(".user2"))) void user2()
 {
-   /* user1: periodically request kernel to print the shared counter via syscall */
+   /* user2: periodically request kernel to print the shared counter via syscall */
    uint32_t *shared1 = (uint32_t *)0x701000;
    while (1)
    {
       /* call the user wrapper */
       sys_counter(shared1);
       /* temporary direct printing */
-      debug("user1\n");
+      debug("user2\n");
       for (volatile int i = 0; i < 100000; i++)
       ;
    }
 }
 
 /* user-space syscall wrapper placed in .user so it runs in ring3 */
-__attribute__((section(".user"))) void sys_counter(uint32_t *counter)
+__attribute__((section(".user1"))) void sys_counter(uint32_t *counter)
 {
    asm volatile ("int $0x80" :: "a"(counter));
 }
@@ -375,15 +375,15 @@ void init_paging()
    /* sauvegarder le PGD pour la première tâche utilisateur */
    Task_Context[0].cr3 = (uint32_t)pgd;
    /* initialize resume frame for task 0 */
-   Task_Context[0].eip = (uint32_t)&user0;
+   Task_Context[0].eip = (uint32_t)&user1;
    Task_Context[0].cs = c3_sel;
    Task_Context[0].ss = d3_sel;
    Task_Context[0].eflags = 0x200; /* IF=1 */
 
-   /* remplir une seconde PGD/PTB pour user1 (PGD à 0x1600000, PTB1 à 0x1601000 et PTB2 à 0x1602000) */
-   pde32_t *user_pgd = (pde32_t *)0x1600000;
-   pte32_t *user_ptb = (pte32_t *)0x1601000;
-   pte32_t *user_ptb2 = (pte32_t *)0x1602000;
+   /* remplir une seconde PGD/PTB pour user2 (PGD à 0x1600000, PTB1 à 0x1601000 et PTB2 à 0x1602000) */
+   pde32_t *user_pgd = (pde32_t *)0x603000;
+   pte32_t *user_ptb = (pte32_t *)0x604000;
+   pte32_t *user_ptb2 = (pte32_t *)0x605000;
    memset(user_pgd, 0, 4096);
    memset(user_ptb, 0, 4096);
    memset(user_ptb2, 0, 4096);
@@ -416,7 +416,7 @@ void init_paging()
    /* sauvegarder le PGD pour la seconde tâche utilisateur */
    Task_Context[1].cr3 = (uint32_t)user_pgd;
    /* initialize resume frame for task 1 */
-   Task_Context[1].eip = (uint32_t)&user1;
+   Task_Context[1].eip = (uint32_t)&user2;
    Task_Context[1].cs = c3_sel;
    Task_Context[1].ss = d3_sel;
    Task_Context[1].eflags = 0x200; /* IF=1 */
@@ -429,40 +429,42 @@ void init_paging()
    /* zero-initialize shared physical page */
    memset((void*)shared_phys, 0, 4096);
    /* mappee virtuellement differemment pour chaque tache (dans 4..8MB) */
-   uint32_t shared_v0 = 0x700000; /* for user0 */
-   uint32_t shared_v1 = 0x701000; /* for user1 */
+   uint32_t shared_v0 = 0x700000; /* for user1 */
+   uint32_t shared_v1 = 0x701000; /* for user2 */
 
    /* Remplacer les entrées correspondantes dans chaque PTB2 pour pointer vers shared_phys */
    uint32_t idx0 = (shared_v0 >> 12) & 0x3ff;
    uint32_t idx1 = (shared_v1 >> 12) & 0x3ff;
 
-   /* user0's ptb2 currently at ptb2 */
+   /* user1's ptb2 currently at ptb2 */
    ptb2[idx0].addr = (shared_phys >> 12);
    ptb2[idx0].p = 1;
    ptb2[idx0].rw = 1;
    ptb2[idx0].lvl = 1;
 
-   /* user1's ptb2 in user_ptb2 */
+   /* user2's ptb2 in user_ptb2 */
    user_ptb2[idx1].addr = (shared_phys >> 12);
    user_ptb2[idx1].p = 1;
    user_ptb2[idx1].rw = 1;
    user_ptb2[idx1].lvl = 1;
 
    /* Stacks utilisateurs (1 page chacun) : donner une page distincte par tache */
-   uint32_t user0_stack_base = 0x700000 + 0x2000; /* pick pages after shared page */
-   uint32_t user1_stack_base = 0x700000 + 0x3000;
-   Task_Context[0].gpr.esp.raw = (uint32_t)(user0_stack_base + 0x1000); /* top of stack */
-   Task_Context[1].gpr.esp.raw = (uint32_t)(user1_stack_base + 0x1000);
+   uint32_t user1_stack_base = 0x401000 ; /* pick pages after shared page */
+   uint32_t user2_stack_base = 0x501000 ;
+   Task_Context[0].gpr.esp.raw = (uint32_t)(user1_stack_base + 0x1000); /* top of stack */
+   Task_Context[1].gpr.esp.raw = (uint32_t)(user2_stack_base + 0x1000);
 
    /* Stacks noyau (1 page chacun) */
    static uint32_t kstack[NUMBER_OF_TASKS];
-   kstack[0] = 0x900000 + 0x1000; /* top */
-   kstack[1] = 0x901000 + 0x1000;
+   kstack[0] = 0x402000 + 0x1000; /* base stack for USER1 */
+   kstack[1] = 0x502000 + 0x1000; /* base stack for USER2 */
    /* initialiser TSS pour la tache 0 */
    TSS.s0.esp = kstack[0];
 
    /* charge CR3 avec l'adresse physique du PGD */
    set_cr3(CR3);
+
+   debug("activation Pagination \n");
 
    /* active le bit PG de CR0 maintenant que les tables sont en place */
    CR0.pg = 1;
@@ -514,7 +516,7 @@ void tp()
 
    // START first user task in ring 3
    // uint32_t   ustack = Task_Context[0].gpr.esp;
-   uint32_t ustack = 0x600000;
+   uint32_t ustack = 0x401000;
    asm volatile(
        "push %0 \n" // ss
        "push %1 \n" // esp pour du ring 3 !
@@ -525,6 +527,6 @@ void tp()
            "i"(d3_sel),
        "m"(ustack),
        "i"(c3_sel),
-       "r"(&user0));
+       "r"(&user1));
    // end common
 }
