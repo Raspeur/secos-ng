@@ -71,12 +71,6 @@ task_ctx_t Task_Context[NUMBER_OF_TASKS];
 // current running task id
 int task_id = 0;
 
-void Init_task_context()
-{
-   // TO DO : initialize task contexts with suitable stack pointers and CR3 values
-   memset(&Task_Context, 0, sizeof(Task_Context));
-}
-
 void init_gdt()
 {
    gdt_reg_t gdtr;
@@ -149,7 +143,7 @@ void timer_isr()
 }
 
 // USERLAND TASKS
-// USER TASKS in .user memory area
+// USER TASKS in .user1/.user2 memory sections
 /* forward declaration of the user-space syscall wrapper (placed in .user) */
 __attribute__((section(".user1"))) void sys_counter(uint32_t *counter);
 
@@ -160,8 +154,9 @@ __attribute__((section(".user1"))) void user1()
    while (1)
    {
       (*shared0)++;
-      debug("user1 : %d\n", *shared0);
-      //debug("user1\n");
+      //debug("user1 : %d\n", *shared0);
+
+      // delay loop to slow down increments
       for (volatile int i = 0; i < 100000; i++)
       ;
    }
@@ -173,10 +168,12 @@ __attribute__((section(".user2"))) void user2()
    uint32_t *shared1 = (uint32_t *)0x701000;
    while (1)
    {
+      /* temporary direct printing */
+      //debug("user2 : ");
       /* call the user wrapper */
       sys_counter(shared1);
-      /* temporary direct printing */
-      debug("user2\n");
+      
+      // delay loop to reduce syscall frequency
       for (volatile int i = 0; i < 100000; i++)
       ;
    }
@@ -204,7 +201,7 @@ int timer_handler(void)
    uint32_t ss, cs;
    uint32_t esp0;
 
-   debug("schedule int");
+   debug("SCHEDULE INT\n");
    /* send EOI to PIC so future timer IRQs are delivered */
    outb(0x20, 0x20);
    /* read EBP into stack_ptr (pointer to the saved stack frame) */
@@ -304,14 +301,11 @@ int timer_handler(void)
 
 void init_paging()
 {
-   /*Q1 : A l'aide de la fonction `get_cr3()`, afficher la valeur courante du
-   registre CR3 dans `tp.c`.*/
+   /* Print current CR3 value using `get_cr3()` */
    int current_CR3_val = get_cr3();
    printf("CR3 = 0x%x\n", current_CR3_val);
-   /*Fin Q1*/
 
-   /*Q2 : Allouer un PGD de type `(pde32_t*)` à l'adresse physique `0x600000` et
-   mettre à jour `CR3` avec cette adresse.*/
+   /* Allocate a PGD at physical address 0x600000 and prepare CR3 */
    cr3_reg_t CR3;
    pde32_t *pgd = (pde32_t *)0x600000;
    /* zero-initialiser PGD */
@@ -326,32 +320,30 @@ void init_paging()
    printf("Valeur de cr0_val = 0x%x\n", cr0_val);
    memcpy(&CR0, &cr0_val, sizeof(CR0));
 
-   /*Q4 : Un certain nombre de choses restent à configurer avant l'activation de
-   la pagination. Comme pour le PGD, allouer également une PTB de type `
-   (pte32_t*)` à l'adresse `0x601000`.*/
-   /* Placement des PT (page table) et initialisation d'un identity mapping pour 0..4MB */
+   /* Allocate a PTB at physical address 0x601000 and set up page tables */
+   /* Place page tables and set up an identity mapping for 0..4MB */
    pte32_t *ptb = (pte32_t *)0x601000;
 
    /* zero-initialiser PT */
    memset(ptb, 0, 4096);
 
-   /* Dans la PGD (Page Global Directory), préparer une entrée (PTE) qui pointe vers la PTB (Page Table Base) avec les attributs present, rw et user */
+   /* In the PGD, prepare an entry pointing to the PTB with present, rw and user attributes */
    pgd[0].addr = ((uint32_t)ptb >> 12);
    pgd[0].p = 1;
    pgd[0].rw = 1;
    pgd[0].lvl = 1; /* user accessible */
 
-   /* remplir la PT pour identity-mapper la première plage 0..4MB (1024 entrées) */
+   /* Fill the PT to identity-map the first 0..4MB range (1024 entries) */
    for (int i = 0; i < 1024; ++i)
    {
-   ptb[i].addr = (i << 0); /* base_phys >>12 stored in addr */
+   ptb[i].addr = (i << 0); /* 'addr' stores (physical_address >> 12). For identity mapping phys = i << 12, so we store i */
    ptb[i].p = 1;
    ptb[i].rw = 1;
    ptb[i].lvl = 1; /* allow user access */
    }
 
    /* ----------------------------------------------------------------------
-   Mapper également la plage 4MB..8MB pour la stack/user (incl. 0x600000) 
+   Also map the 4MB..8MB range for stack/user (includes 0x600000)
    ---------------------------------------------------------------------- */
    pte32_t *ptb2 = (pte32_t *)0x602000;
    memset(ptb2, 0, 4096);
@@ -362,7 +354,7 @@ void init_paging()
    pgd[1].rw = 1;
    pgd[1].lvl = 1; /* user accessible */
 
-   /* remplir la PTB2 pour identity-mapper 4..8MB */
+   /* Fill PTB2 to identity-map 4..8MB */
    for (int i = 0; i < 1024; ++i)
    {
    uint32_t phys = 0x400000 + (i << 12);
@@ -372,7 +364,7 @@ void init_paging()
    ptb2[i].lvl = 1;
    }
 
-   /* sauvegarder le PGD pour la première tâche utilisateur */
+   /* Save the PGD for the first user task */
    Task_Context[0].cr3 = (uint32_t)pgd;
    /* initialize resume frame for task 0 */
    Task_Context[0].eip = (uint32_t)&user1;
@@ -380,7 +372,7 @@ void init_paging()
    Task_Context[0].ss = d3_sel;
    Task_Context[0].eflags = 0x200; /* IF=1 */
 
-   /* remplir une seconde PGD/PTB pour user2 (PGD à 0x1600000, PTB1 à 0x1601000 et PTB2 à 0x1602000) */
+   /* Fill a second PGD/PTB for user2 (PGD at 0x603000, PTB1 at 0x604000 and PTB2 at 0x605000) */
    pde32_t *user_pgd = (pde32_t *)0x603000;
    pte32_t *user_ptb = (pte32_t *)0x604000;
    pte32_t *user_ptb2 = (pte32_t *)0x605000;
@@ -388,13 +380,13 @@ void init_paging()
    memset(user_ptb, 0, 4096);
    memset(user_ptb2, 0, 4096);
 
-   /* user_pgd mappe 0..4MB via user_ptb */
+   /* user_pgd maps 0..4MB via user_ptb */
    user_pgd[0].addr = ((uint32_t)user_ptb >> 12);
    user_pgd[0].p = 1;
    user_pgd[0].rw = 1;
    user_pgd[0].lvl = 1;
    for (int i = 0; i < 1024; ++i) {
-      user_ptb[i].addr = (i << 0);
+      user_ptb[i].addr = (i << 0); /* 'addr' stores (physical_address >> 12). For identity mapping phys = i << 12, so we store i */
       user_ptb[i].p = 1;
       user_ptb[i].rw = 1;
       user_ptb[i].lvl = 1;
@@ -413,7 +405,7 @@ void init_paging()
       user_ptb2[i].lvl = 1;
    }
 
-   /* sauvegarder le PGD pour la seconde tâche utilisateur */
+   /* Save the PGD for the second user task */
    Task_Context[1].cr3 = (uint32_t)user_pgd;
    /* initialize resume frame for task 1 */
    Task_Context[1].eip = (uint32_t)&user2;
@@ -422,17 +414,17 @@ void init_paging()
    Task_Context[1].eflags = 0x200; /* IF=1 */
 
    /* -------------------------------------------------------------
-   Zones partagées et stacks
+   Shared zones and stacks
    ------------------------------------------------------------- */
-   /* page physique partagée (choix arbitraire dans 4..8MB) */
+   /* shared physical page (arbitrarily chosen in 4..8MB) */
    uint32_t shared_phys = 0x700000; /* physical page used as shared page */
    /* zero-initialize shared physical page */
    memset((void*)shared_phys, 0, 4096);
-   /* mappee virtuellement differemment pour chaque tache (dans 4..8MB) */
+   /* mapped differently in virtual space for each task (in 4..8MB) */
    uint32_t shared_v0 = 0x700000; /* for user1 */
    uint32_t shared_v1 = 0x701000; /* for user2 */
 
-   /* Remplacer les entrées correspondantes dans chaque PTB2 pour pointer vers shared_phys */
+   /* Replace the corresponding PTB2 entries to point to shared_phys */
    uint32_t idx0 = (shared_v0 >> 12) & 0x3ff;
    uint32_t idx1 = (shared_v1 >> 12) & 0x3ff;
 
@@ -448,25 +440,25 @@ void init_paging()
    user_ptb2[idx1].rw = 1;
    user_ptb2[idx1].lvl = 1;
 
-   /* Stacks utilisateurs (1 page chacun) : donner une page distincte par tache */
+   /* User stacks (1 page each): give each task a distinct page */
    uint32_t user1_stack_base = 0x401000 ; /* pick pages after shared page */
    uint32_t user2_stack_base = 0x501000 ;
    Task_Context[0].gpr.esp.raw = (uint32_t)(user1_stack_base + 0x1000); /* top of stack */
    Task_Context[1].gpr.esp.raw = (uint32_t)(user2_stack_base + 0x1000);
 
-   /* Stacks noyau (1 page chacun) */
+   /* Kernel stacks (1 page each) */
    static uint32_t kstack[NUMBER_OF_TASKS];
    kstack[0] = 0x402000 + 0x1000; /* base stack for USER1 */
    kstack[1] = 0x502000 + 0x1000; /* base stack for USER2 */
-   /* initialiser TSS pour la tache 0 */
+   /* Initialize TSS for task 0 */
    TSS.s0.esp = kstack[0];
 
-   /* charge CR3 avec l'adresse physique du PGD */
+   /* Load CR3 with the physical address of the PGD */
    set_cr3(CR3);
 
    debug("activation Pagination \n");
 
-   /* active le bit PG de CR0 maintenant que les tables sont en place */
+   /* Enable the PG bit in CR0 now that the tables are in place */
    CR0.pg = 1;
    set_cr0(CR0);
 }
