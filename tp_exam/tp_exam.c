@@ -154,10 +154,10 @@ __attribute__((section(".user1"))) void user1()
    while (1)
    {
       (*shared0)++;
-      //debug("user1 : %d\n", *shared0);
+      debug("user1 : %d\n", *shared0);
 
       // delay loop to slow down increments
-      for (volatile int i = 0; i < 100000; i++)
+      for (volatile int i = 0; i < 1000000; i++)
       ;
    }
 }
@@ -169,12 +169,12 @@ __attribute__((section(".user2"))) void user2()
    while (1)
    {
       /* temporary direct printing */
-      //debug("user2 : ");
+      debug("user2 : ");
       /* call the user wrapper */
       sys_counter(shared1);
       
       // delay loop to reduce syscall frequency
-      for (volatile int i = 0; i < 100000; i++)
+      for (volatile int i = 0; i < 1000000; i++)
       ;
    }
 }
@@ -299,30 +299,18 @@ int timer_handler(void)
    return 1;
 }
 
-void init_paging()
+void init_paging_identity(int pgd_phys_addr, int ptb1_phys_addr, int ptb2_phys_addr)
 {
-   /* Print current CR3 value using `get_cr3()` */
-   int current_CR3_val = get_cr3();
-   printf("CR3 = 0x%x\n", current_CR3_val);
-
-   /* Allocate a PGD at physical address 0x600000 and prepare CR3 */
-   cr3_reg_t CR3;
-   pde32_t *pgd = (pde32_t *)0x600000;
+  
+   pde32_t *pgd = (pde32_t *)pgd_phys_addr;
    /* zero-initialiser PGD */
    memset(pgd, 0, 4096);
 
-   CR3.addr = (uint32_t)pgd >> 12;
-   printf("CR3.addr = 0x%x\n", CR3.addr);
-   /* Ne pas charger CR3 maintenant : on configure d'abord toutes les PT */
-
-   cr0_reg_t CR0;
-   uint32_t cr0_val = get_cr0();
-   printf("Valeur de cr0_val = 0x%x\n", cr0_val);
-   memcpy(&CR0, &cr0_val, sizeof(CR0));
-
-   /* Allocate a PTB at physical address 0x601000 and set up page tables */
+ 
+  
+   /* Allocate a PTB at physical address and set up page tables */
    /* Place page tables and set up an identity mapping for 0..4MB */
-   pte32_t *ptb = (pte32_t *)0x601000;
+   pte32_t *ptb = (pte32_t *)ptb1_phys_addr;
 
    /* zero-initialiser PT */
    memset(ptb, 0, 4096);
@@ -343,9 +331,9 @@ void init_paging()
    }
 
    /* ----------------------------------------------------------------------
-   Also map the 4MB..8MB range for stack/user (includes 0x600000)
+   Also map the 4MB..8MB range for stack/user 
    ---------------------------------------------------------------------- */
-   pte32_t *ptb2 = (pte32_t *)0x602000;
+   pte32_t *ptb2 = (pte32_t *)ptb2_phys_addr;
    memset(ptb2, 0, 4096);
 
    /* PGD[1] -> PTB2 (virt/phys 0x400000..0x7FFFFF) */
@@ -363,115 +351,19 @@ void init_paging()
    ptb2[i].rw = 1;
    ptb2[i].lvl = 1;
    }
-
-   /* Save the PGD for the first user task */
-   Task_Context[0].cr3 = (uint32_t)pgd;
-   /* initialize resume frame for task 0 */
-   Task_Context[0].eip = (uint32_t)&user1;
-   Task_Context[0].cs = c3_sel;
-   Task_Context[0].ss = d3_sel;
-   Task_Context[0].eflags = 0x200; /* IF=1 */
-
-   /* Fill a second PGD/PTB for user2 (PGD at 0x603000, PTB1 at 0x604000 and PTB2 at 0x605000) */
-   pde32_t *user_pgd = (pde32_t *)0x603000;
-   pte32_t *user_ptb = (pte32_t *)0x604000;
-   pte32_t *user_ptb2 = (pte32_t *)0x605000;
-   memset(user_pgd, 0, 4096);
-   memset(user_ptb, 0, 4096);
-   memset(user_ptb2, 0, 4096);
-
-   /* user_pgd maps 0..4MB via user_ptb */
-   user_pgd[0].addr = ((uint32_t)user_ptb >> 12);
-   user_pgd[0].p = 1;
-   user_pgd[0].rw = 1;
-   user_pgd[0].lvl = 1;
-   for (int i = 0; i < 1024; ++i) {
-      user_ptb[i].addr = (i << 0); /* 'addr' stores (physical_address >> 12). For identity mapping phys = i << 12, so we store i */
-      user_ptb[i].p = 1;
-      user_ptb[i].rw = 1;
-      user_ptb[i].lvl = 1;
-   }
-
-   /* user_pgd maps 4..8MB via user_ptb2 */
-   user_pgd[1].addr = ((uint32_t)user_ptb2 >> 12);
-   user_pgd[1].p = 1;
-   user_pgd[1].rw = 1;
-   user_pgd[1].lvl = 1;
-   for (int i = 0; i < 1024; ++i) {
-      uint32_t phys = 0x400000 + (i << 12);
-      user_ptb2[i].addr = (phys >> 12);
-      user_ptb2[i].p = 1;
-      user_ptb2[i].rw = 1;
-      user_ptb2[i].lvl = 1;
-   }
-
-   /* Save the PGD for the second user task */
-   Task_Context[1].cr3 = (uint32_t)user_pgd;
-   /* initialize resume frame for task 1 */
-   Task_Context[1].eip = (uint32_t)&user2;
-   Task_Context[1].cs = c3_sel;
-   Task_Context[1].ss = d3_sel;
-   Task_Context[1].eflags = 0x200; /* IF=1 */
-
-   /* -------------------------------------------------------------
-   Shared zones and stacks
-   ------------------------------------------------------------- */
-   /* shared physical page (arbitrarily chosen in 4..8MB) */
-   uint32_t shared_phys = 0x700000; /* physical page used as shared page */
-   /* zero-initialize shared physical page */
-   memset((void*)shared_phys, 0, 4096);
-   /* mapped differently in virtual space for each task (in 4..8MB) */
-   uint32_t shared_v0 = 0x700000; /* for user1 */
-   uint32_t shared_v1 = 0x701000; /* for user2 */
-
-   /* Replace the corresponding PTB2 entries to point to shared_phys */
-   uint32_t idx0 = (shared_v0 >> 12) & 0x3ff;
-   uint32_t idx1 = (shared_v1 >> 12) & 0x3ff;
-
-   /* user1's ptb2 currently at ptb2 */
-   ptb2[idx0].addr = (shared_phys >> 12);
-   ptb2[idx0].p = 1;
-   ptb2[idx0].rw = 1;
-   ptb2[idx0].lvl = 1;
-
-   /* user2's ptb2 in user_ptb2 */
-   user_ptb2[idx1].addr = (shared_phys >> 12);
-   user_ptb2[idx1].p = 1;
-   user_ptb2[idx1].rw = 1;
-   user_ptb2[idx1].lvl = 1;
-
-   /* User stacks (1 page each): give each task a distinct page */
-   uint32_t user1_stack_base = 0x401000 ; /* pick pages after shared page */
-   uint32_t user2_stack_base = 0x501000 ;
-   Task_Context[0].gpr.esp.raw = (uint32_t)(user1_stack_base + 0x1000); /* top of stack */
-   Task_Context[1].gpr.esp.raw = (uint32_t)(user2_stack_base + 0x1000);
-
-   /* Kernel stacks (1 page each) */
-   static uint32_t kstack[NUMBER_OF_TASKS];
-   kstack[0] = 0x402000 + 0x1000; /* base stack for USER1 */
-   kstack[1] = 0x502000 + 0x1000; /* base stack for USER2 */
-   /* Initialize TSS for task 0 */
-   TSS.s0.esp = kstack[0];
-
-   /* Load CR3 with the physical address of the PGD */
-   set_cr3(CR3);
-
-   debug("activation Pagination \n");
-
-   /* Enable the PG bit in CR0 now that the tables are in place */
-   CR0.pg = 1;
-   set_cr0(CR0);
 }
+
+
 
 void tp()
 {
+
    // disable interruptions
    asm volatile("cli");
 
-   // init paging for kernel and user tasks
-   debug("Init Paging");
-   init_paging();
-
+   /* -------------------------------------------------------------
+   SEGMENTATION INITIALIZATION
+   ------------------------------------------------------------- */
    // TP5 Q1 : FLAT MODEL FOR SEGMENTS
    debug("Init GDT");
    init_gdt();
@@ -486,6 +378,119 @@ void tp()
    tss_dsc(&GDT[ts_idx], (offset_t)&TSS);
    set_tr(ts_sel);
    // end Q1
+
+
+   /* -------------------------------------------------------------
+   PAGING INITIALIZATION
+   ------------------------------------------------------------- */
+  
+   // init paging for kernel and user tasks
+   debug("Init Paging");
+   // init paging with PGD at 0x600000, PTB1 at 0x601000, PTB2 at 0x602000 for the kernel
+   init_paging_identity(0x600000, 0x601000, 0x602000);
+
+   // init paging with PGD at 0x603000, PTB1 at 0x604000, PTB2 at 0x605000 for the first user task
+   init_paging_identity(0x603000, 0x604000, 0x605000);
+
+   // init paging with PGD at 0x606000, PTB1 at 0x607000, PTB2 at 0x608000 for the second user task
+   init_paging_identity(0x606000, 0x607000, 0x608000);
+
+   /* Save the PGD fo the first user task */
+   Task_Context[0].cr3 = (uint32_t)0x603000;
+   /* initialize resume frame for task 0 */
+   Task_Context[0].eip = (uint32_t)&user1;
+   Task_Context[0].cs = c3_sel;
+   Task_Context[0].ss = d3_sel;
+   Task_Context[0].eflags = 0x200; /* IF=1 */
+
+
+
+   /* Save the PGD for the second user task */
+   Task_Context[1].cr3 = (uint32_t)0x606000;
+   /* initialize resume frame for task 1 */
+   Task_Context[1].eip = (uint32_t)&user2;
+   Task_Context[1].cs = c3_sel;
+   Task_Context[1].ss = d3_sel;
+   Task_Context[1].eflags = 0x200; /* IF=1 */
+
+
+
+   /* -------------------------------------------------------------
+   INITIALIZE Shared zones 
+   ------------------------------------------------------------- */
+   /* shared physical page (arbitrarily chosen in 4..8MB) */
+   uint32_t shared_phys = 0x700000; /* physical page used as shared page */
+   /* zero-initialize shared physical page */
+   memset((void*)shared_phys, 0, 4096);
+   /* mapped differently in virtual space for each task (in 4..8MB) */
+   uint32_t shared_v0 = 0x700000; /* for user1 */
+   uint32_t shared_v1 = 0x701000; /* for user2 */
+
+   /* Replace the corresponding PTB2 entries to point to shared_phys */
+   uint32_t idx0 = (shared_v0 >> 12) & 0x3ff;  // = 768 in second PTB for user1  
+   uint32_t idx1 = (shared_v1 >> 12) & 0x3ff;  // = 769 in second PTB for user2
+
+   /* user1's shared memory change from identity */
+   pte32_t *ptb=(pte32_t *)0x605000;
+   ptb[idx0].addr = (shared_phys >> 12);
+   ptb[idx0].p = 1;
+   ptb[idx0].rw = 1;
+   ptb[idx0].lvl = 1;
+
+   /* user2's shared memory change from identity */
+   ptb=(pte32_t *)0x608000;
+   ptb[idx1].addr = (shared_phys >> 12);
+   ptb[idx1].p = 1;
+   ptb[idx1].rw = 1;
+   ptb[idx1].lvl = 1;
+
+   /* User stacks (1 page each): give each task a distinct page */
+   uint32_t user1_stack_base = 0x401000 ; /* pick pages after shared page */
+   uint32_t user2_stack_base = 0x501000 ;
+   Task_Context[0].gpr.esp.raw = (uint32_t)(user1_stack_base + 0x1000); /* top of stack */
+   Task_Context[1].gpr.esp.raw = (uint32_t)(user2_stack_base + 0x1000);
+
+   /* Kernel stacks (1 page each) */
+   static uint32_t kstack[NUMBER_OF_TASKS];
+   kstack[0] = 0x402000 + 0x1000; /* base stack for USER1 */
+   kstack[1] = 0x502000 + 0x1000; /* base stack for USER2 */
+   /* Initialize TSS for task 0 */
+   TSS.s0.esp = kstack[0];
+
+
+
+
+
+   /* Allocate a PGD at physical address 0x600000 and prepare CR3 */
+   cr3_reg_t CR3;
+    /* Print current CR3 value using `get_cr3()` */
+   int current_CR3_val = get_cr3();
+   debug("CR3 = 0x%x\n", current_CR3_val);
+   CR3.addr = (uint32_t)0x600000 >> 12;
+   debug("CR3.addr = 0x%x\n", CR3.addr);
+   /* Load CR3 with the physical address of the PGD */
+   set_cr3(CR3);
+
+
+
+
+
+   debug("activation Pagination \n");
+
+   /* Enable the PG bit in CR0 now that the tables are in place */
+   cr0_reg_t CR0;
+   uint32_t cr0_val = get_cr0();
+   debug("Valeur de cr0_val = 0x%x\n", cr0_val);
+   memcpy(&CR0, &cr0_val, sizeof(CR0));
+
+   CR0.pg = 1;
+   set_cr0(CR0);
+   debug("Pagination activée \n");
+   
+   /* -------------------------------------------------------------
+   INTERRUPT INITIALIZATION
+   ------------------------------------------------------------- */  
+
 
    debug("Init de l'IDTR\n");
    // start init
@@ -506,6 +511,12 @@ void tp()
    // enable interruptions
    asm volatile("sti");
 
+
+
+
+   /* -------------------------------------------------------------
+   START TASK 1
+   ------------------------------------------------------------- */  
    // START first user task in ring 3
    // uint32_t   ustack = Task_Context[0].gpr.esp;
    uint32_t ustack = 0x401000;

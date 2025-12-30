@@ -13,7 +13,7 @@ make qemu QDBG=
 ```
 
 3. Pour observer clairement la différence entre user1 et user2 :
-- Décommenter les lignes de debug dans `void user1()` et `void user2()`.
+- Décommenter les lignes de debug dans `void user1()` et `void user2()` (elles le sont déjà).
 
 ## Vue physique (adresses importantes)
 - `0x000000` - `0x003FFFFF` : zone 0..4MB — identity-mappée (PTB / PDE[0])
